@@ -33,31 +33,38 @@ int main()
 	}
 	listen(socket_fd, 5);
 
-	struct sockaddr_in client_addr;
-	socklen_t client_len = sizeof(client_addr);
-	int newsocket_fd = accept(socket_fd, (struct sockaddr *)&client_addr, &client_len);
+	while(1){
+		printf("Waiting for a connection...\n");
 
-	char buffer[1024];
-	int bytes_read = read(newsocket_fd, buffer, sizeof(buffer) - 1);
+		struct sockaddr_in client_addr;
+		socklen_t client_len = sizeof(client_addr);
+		int newsocket_fd = accept(socket_fd, (struct sockaddr *)&client_addr, &client_len);
 
-	if (bytes_read > 0)
-	{
-		buffer[bytes_read] = '\0';
-		printf("Received data: %s\n", buffer);
+		char buffer[1024];
+		int bytes_read = read(newsocket_fd, buffer, sizeof(buffer) - 1);
+
+		if (bytes_read > 0)
+		{
+			buffer[bytes_read] = '\0';
+			printf("Received data: %s\n", buffer);
+		}
+
+		printf("\n");
+
+		const char *body = "{\"message\": \"Hello from the server!\"}";
+		char response[512];
+
+		sprintf(response,
+				"HTTP/1.1 200 OK\r\n"
+				"Content-Type: application/json\r\n"
+				"Content-Length: %lu\r\n"
+				"\r\n"
+				"%s",
+				strlen(body), body);
+
+		write(newsocket_fd, response, strlen(response));
+		close(newsocket_fd);
 	}
 
-	const char *body = "{\"message\": \"Hello from the server!\"}";
-	char response[512];
-
-	sprintf(response,
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: application/json\r\n"
-			"Content-Length: %lu\r\n"
-			"\r\n"
-			"%s",
-			strlen(body), body);
-
-	write(newsocket_fd, response, strlen(response));
-	close(newsocket_fd);
 	close(socket_fd);
 }
