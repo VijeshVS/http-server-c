@@ -6,28 +6,47 @@
 #include <arpa/inet.h>
 
 // Format:
-// Type / HTTP/Version
+// Type Path HTTP/Version
 // Header1: value
 // Header2: value
 // ...
 // \r\n
 // Body
 
-int main()
-{
+#define REQUEST_BUFFER_SIZE 1024
+#define PORT 8080
+
+struct Client_Request {
+	char buffer[REQUEST_BUFFER_SIZE];
+	struct sockaddr_in client_addr;
+	int client_socket_fd;
+};
+
+struct Parsed_Request {
+	char method[16];
+	char path[256];
+	char version[16];
+	char headers_keys[512][512];
+	char headers_values[512][512];
+	int header_count;
+	char body[256];
+};
+
+// TC: O(1)
+int intialize_socket(){
 	int socket_fd = socket(PF_INET, SOCK_STREAM, 0);
 
 	if (socket_fd == -1)
 	{
-		printf("Failed to create a socket !!");
-		return 1;
+		perror("Socket creation failed");
+		exit(1);
 	}
 
 	struct sockaddr_in address;
 	memset(&address, 0, sizeof(address));
 	address.sin_len = sizeof(address);
 	address.sin_family = AF_INET;
-	address.sin_port = htons(8080);
+	address.sin_port = htons(PORT);
 	address.sin_addr.s_addr = INADDR_ANY;
 
 	int opt = 1;
@@ -36,140 +55,138 @@ int main()
 	int bind_score = bind(socket_fd, (struct sockaddr *)&address, sizeof(address));
 	if (bind_score == -1)
 	{
-		printf("Failed to bind the socket !!");
-		return 1;
+		perror("Bind failed");
+		exit(1);
 	}
 	listen(socket_fd, 5);
 
-	while(1){
-		printf("\nWaiting for a connection...\n");
+	return socket_fd;
+}
 
-		struct sockaddr_in client_addr;
-		socklen_t client_len = sizeof(client_addr);
-		int newsocket_fd = accept(socket_fd, (struct sockaddr *)&client_addr, &client_len);
+// TC: O(n) where n is bytes read
+struct Client_Request connect_client(int socket_fd){
+	struct Client_Request client_req;
+	socklen_t client_len = sizeof(client_req.client_addr);
+	int newsocket_fd = accept(socket_fd, (struct sockaddr *)&client_req.client_addr, &client_len);
 
-		char buffer[1024];
-		int bytes_read = read(newsocket_fd, buffer, sizeof(buffer) - 1);
+	if(newsocket_fd < 0){
+		perror("accept failed");
+		exit(1);
+	}
 
-		if (bytes_read > 0)
-		{
-			buffer[bytes_read] = '\0';
-		}
-		
-		char request_line[26];
-		int i = 0;
-		while(buffer[i] != '\r'){
-			request_line[i] = buffer[i];
-			i++;
-		}
-		request_line[i] = '\0';
+	client_req.client_socket_fd = newsocket_fd;
+	int bytes_read = read(newsocket_fd, client_req.buffer, sizeof(client_req.buffer) - 1);
 
-		char method[16], path[256], version[16];
-		sscanf(request_line, "%s %s %s", method, path, version);
+	if (bytes_read > 0)
+	{
+		client_req.buffer[bytes_read] = '\0';
+	}
 
-		char headers[512][512];
-		int header_count = 0;
-		i += 2; // Skip \r\n
+	return client_req;
+}
 
-		while(buffer[i] != '\r' && buffer[i+2] != '\r'){
-			int k = 0;
-			while(buffer[i] != '\r'){
-				headers[header_count][k] = buffer[i];
-				i += 1;
-				k += 1;
-			}
-			headers[header_count][k] = '\0';
-			header_count += 1;
-			i += 2;
-		}
+// TC: O(n) where n is request buffer size
+struct Parsed_Request parse_request(struct Client_Request client_req){
+	struct Parsed_Request parsed_req;
 
-		i += 2;
+	char request_line[26];
+	int i = 0;
+	while(client_req.buffer[i] != '\r'){
+		request_line[i] = client_req.buffer[i];
+		i++;
+	}
+	request_line[i] = '\0';
 
-		// key: value
-		char headers_keys[512][512];
-		char headers_values[512][512];
-		
-		for(int j = 0;j < header_count; j++){
-			char key[256], value[256];
-			sscanf(headers[j], "%[^:]: %[^\r]", key, value);
-			strcpy(headers_keys[j], key);
-			strcpy(headers_values[j], value);
-		}
+	sscanf(request_line, "%s %s %s", parsed_req.method, parsed_req.path, parsed_req.version);
 
-		char parse_body[256];
+	int header_count = 0;
+	i += 2; // Skip \r\n
+	char headers[512][512];
+	while(client_req.buffer[i] != '\r' && client_req.buffer[i+2] != '\r'){
 		int k = 0;
-		while(buffer[i] != '\0'){
-			parse_body[k] = buffer[i];
+		while(client_req.buffer[i] != '\r'){
+			headers[header_count][k] = client_req.buffer[i];
 			i += 1;
 			k += 1;
 		}
+		headers[header_count][k] = '\0';
+		header_count += 1;
+		i += 2;
+	}
 
-		parse_body[k] = '\0';
+	i += 2;
+	
+	for(int j = 0;j < header_count; j++){
+		char key[256], value[256];
+		sscanf(headers[j], "%[^:]: %[^\r]", key, value);
+		strcpy(parsed_req.headers_keys[j], key);
+		strcpy(parsed_req.headers_values[j], value);
+	}
 
-		if(strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0){
-			const char *body = "{\"message\": \"Hello from the server!\"}";
-			char response[512];
+	int k = 0;
+	while(client_req.buffer[i] != '\0'){
+		parsed_req.body[k] = client_req.buffer[i];
+		i += 1;
+		k += 1;
+	}
 
-			sprintf(response,
-					"HTTP/1.1 200 OK\r\n"
-					"Content-Type: application/json\r\n"
-					"Content-Length: %lu\r\n"
-					"\r\n"
-					"%s",
-					strlen(body), body);
-			
-			write(newsocket_fd, response, strlen(response));
+	parsed_req.body[k] = '\0';
+
+	return parsed_req;
+}
+
+// TC: O(m) where m is file size for /home, O(1) for other paths
+int serve_request(int client_socket_fd, char path[], char method[]){
+	char response[5024];
+
+	if(strcmp(path, "/") == 0 && strcmp(method, "GET") == 0){
+		strcpy(response, "HTTP/1.1 200 OK\r\n"
+						"Content-Type: text/plain\r\n"
+						"\r\nHello, World!");
+		write(client_socket_fd, response, strlen(response));
+		return 1;
+	}
+	else if(strcmp(path, "/home") == 0 && strcmp(method, "GET") == 0){
+		FILE *file = fopen("home.html", "r");
+		if (file == NULL) {
+			strcpy(response, "HTTP/1.1 500 Internal Server Error\r\n"
+							"Content-Type: text/plain\r\n"
+							"\r\nFailed to read home.html");
+			write(client_socket_fd, response, strlen(response));
+			return 0;
 		}
-		else if(strcmp(method, "GET") == 0 && strcmp(path, "/home") == 0){
-			// return home.html file
-			FILE *file = fopen("home.html", "r");
-			if (file == NULL) {
-				const char *body = "{\"error\": \"File not found\"}";
-				char response[512];
-				sprintf(response,
-						"HTTP/1.1 404 Not Found\r\n"
-						"Content-Type: application/json\r\n"
-						"Content-Length: %lu\r\n"
-						"\r\n"
-						"%s",
-						strlen(body), body);
-				write(newsocket_fd, response, strlen(response));
-			} else {
-				fseek(file, 0, SEEK_END);
-				long file_size = ftell(file);
-				fseek(file, 0, SEEK_SET);
-				// do static assignment
-				char file_content[5024];
-				fread(file_content, 1, file_size, file);
-				file_content[file_size] = '\0';
-				char response[5024];
-				sprintf(response,
-						"HTTP/1.1 200 OK\r\n"
+		char file_content[5024];
+		fread(file_content, 1, sizeof(file_content), file);
+		file_content[sizeof(file_content) - 1] = '\0';
+		fclose(file);
+
+		strcpy(response, "HTTP/1.1 200 OK\r\n"
 						"Content-Type: text/html\r\n"
-						"Content-Length: %lu\r\n"
-						"\r\n"
-						"%s",
-						strlen(file_content), file_content);
-				write(newsocket_fd, response, strlen(response));
-				fclose(file);
-			}
-		}
-		else {
-			const char *body = "{\"error\": \"Not Found\"}";
-			char response[512];
+						"\r\n");
+		strcat(response, file_content);
+		write(client_socket_fd, response, strlen(response));
+		return 1;
+	}
+	else {
+		strcpy(response, "HTTP/1.1 404 Not Found\r\n"
+						"Content-Type: text/plain\r\n"
+						"\r\nPage Not Found");
+		write(client_socket_fd, response, strlen(response));
+		return 0;
+	}
+	return 0;
+}
 
-			sprintf(response,
-					"HTTP/1.1 404 Not Found\r\n"
-					"Content-Type: application/json\r\n"
-					"Content-Length: %lu\r\n"
-					"\r\n"
-					"%s",
-					strlen(body), body);
-			
-			write(newsocket_fd, response, strlen(response));
-		}
+// TC: O(n) where n is total requests handled
+int main()
+{
+	int socket_fd = intialize_socket();
 
-		close(newsocket_fd);
+	while(1){
+		struct Client_Request client_req = connect_client(socket_fd);
+		struct Parsed_Request parsed_req = parse_request(client_req);
+		serve_request(client_req.client_socket_fd,parsed_req.path, parsed_req.method);
+		close(client_req.client_socket_fd);
 	}
 
 	close(socket_fd);
